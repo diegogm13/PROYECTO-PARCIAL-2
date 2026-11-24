@@ -1,0 +1,38 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.db
+
+# Reportes de pruebas
+reports/
+test-results/
+playwright-report/
+
+# Nunca subir secretos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+*.log
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+
+# LaTeX
+reporte/*.aux
+reporte/*.log
+reporte/*.out
+reporte/*.toc
+reporte/*.lof
+reporte/*.synctex.gz
+reporte/*.fls
+reporte/*.fdb_latexmk

@@ -1,0 +1,153 @@
+# Stack completo.
+#   Solo la app (CI / local):   docker compose up -d --build
+#   App + monitoreo (EC2):      COMPOSE_PROFILES=monitoring en .env  ->  docker compose up -d --build
+name: sa-v2
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # ------------------------------------------------------------------ APP
+  db:
+    <<: *restart
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sa}
+      POSTGRES_USER: ${POSTGRES_USER:-sa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sa_dev_password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    <<: *restart
+    build:
+      context: ./backend
+      args:
+        GIT_SHA: ${GIT_SHA:-local}
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sa}:${POSTGRES_PASSWORD:-sa_dev_password}@db:5432/${POSTGRES_DB:-sa}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-solo-para-desarrollo-local-cambiar}
+      ADMIN_NAME: ${ADMIN_NAME:-Administrador}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@sa.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin123!}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      GIT_SHA: ${GIT_SHA:-local}
+      # Vacío = telemetría apagada (CI). En EC2: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: sa-backend
+    depends_on:
+      db:
+        condition: service_healthy
+
+  nginx:
+    <<: *restart
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # ------------------------------------------------------------ MONITOREO
+  openobserve:
+    <<: *restart
+    profiles: [monitoring]
+    image: public.ecr.aws/zinclabs/openobserve:v0.15.0
+    environment:
+      ZO_ROOT_USER_EMAIL: ${OPENOBSERVE_USER:-admin@sa.com}
+      ZO_ROOT_USER_PASSWORD: ${OPENOBSERVE_PASSWORD:-Complexpass#123}
+      ZO_DATA_DIR: /data
+      ZO_TELEMETRY: "false"
+    ports:
+      - "5080:5080"
+    volumes:
+      - openobserve-data:/data
+
+  otel-collector:
+    <<: *restart
+    profiles: [monitoring]
+    image: otel/opentelemetry-collector-contrib:0.130.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      OPENOBSERVE_USER: ${OPENOBSERVE_USER:-admin@sa.com}
+      OPENOBSERVE_PASSWORD: ${OPENOBSERVE_PASSWORD:-Complexpass#123}
+    volumes:
+      - ./monitoring/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - openobserve
+
+  node-exporter:
+    <<: *restart
+    profiles: [monitoring]
+    image: prom/node-exporter:v1.9.1
+    # Red y PID del host: así ve el ancho de banda real de la EC2
+    network_mode: host
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+      - --web.listen-address=:9100
+    volumes:
+      - /:/host:ro,rslave
+      - textfile:/textfile:ro
+
+  temperature-exporter:
+    <<: *restart
+    profiles: [monitoring]
+    image: alpine:3.22
+    command: ["sh", "/temperature.sh"]
+    volumes:
+      - ./monitoring/temperature/temperature.sh:/temperature.sh:ro
+      - /sys:/host/sys:ro
+      - textfile:/textfile
+
+  prometheus:
+    <<: *restart
+    profiles: [monitoring]
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    <<: *restart
+    profiles: [monitoring]
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin123}
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
+  openobserve-data:
+  prometheus-data:
+  grafana-data:
+  textfile:

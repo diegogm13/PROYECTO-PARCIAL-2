@@ -1,0 +1,71 @@
+# OpenTelemetry Collector: punto único de recolección en la EC2.
+#   - Recibe OTLP del backend (logs, métricas, trazas)           -> OpenObserve
+#   - Raspa node-exporter (CPU, RAM, red, disco, temperatura)    -> OpenObserve
+#   - Expone las métricas de la app en :8889 para Prometheus     -> Grafana
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  basicauth/openobserve:
+    client_auth:
+      username: ${env:OPENOBSERVE_USER}
+      password: ${env:OPENOBSERVE_PASSWORD}
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: ec2-node
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["host.docker.internal:9100"]
+              labels:
+                instance: ec2
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 200
+  batch:
+    timeout: 5s
+
+exporters:
+  otlphttp/openobserve:
+    endpoint: http://openobserve:5080/api/default
+    auth:
+      authenticator: basicauth/openobserve
+    headers:
+      stream-name: default
+
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    add_metric_suffixes: false
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  extensions: [health_check, basicauth/openobserve]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/openobserve]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/openobserve]
+    metrics/app:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/openobserve, prometheus]
+    metrics/infra:
+      receivers: [prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/openobserve]

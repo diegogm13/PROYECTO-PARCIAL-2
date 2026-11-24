@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Usuarios | SA</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <strong data-testid="users-title">Administración de usuarios</strong>
+    <div>
+      <span class="who" data-testid="current-user"></span>
+      <button class="secondary" id="logout" data-testid="logout">Cerrar sesión</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2 id="form-title" data-testid="form-title">Nuevo usuario</h2>
+      <form id="user-form" data-testid="user-form" novalidate>
+        <input type="hidden" id="user-id">
+        <div class="form-grid">
+          <div>
+            <label for="name">Nombre</label>
+            <input id="name" data-testid="user-name" required>
+          </div>
+          <div>
+            <label for="email">Email</label>
+            <input id="email" type="email" data-testid="user-email" required>
+          </div>
+          <div>
+            <label for="password">Contraseña <small id="pwd-hint">(obligatoria)</small></label>
+            <input id="password" type="password" autocomplete="new-password" data-testid="user-password">
+          </div>
+          <div>
+            <label for="role">Rol</label>
+            <select id="role" data-testid="user-role">
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <div>
+            <label for="active">Estado</label>
+            <select id="active" data-testid="user-active">
+              <option value="true">Activo</option>
+              <option value="false">Inactivo</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" id="save" data-testid="user-save">Crear usuario</button>
+          <button type="button" class="secondary hidden" id="cancel" data-testid="user-cancel">Cancelar</button>
+        </div>
+        <div id="alert" class="alert hidden" role="alert" data-testid="users-alert"></div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Usuarios registrados (<span id="count" data-testid="users-count">0</span>)</h2>
+      <div class="table-wrap">
+        <table data-testid="users-table">
+          <thead>
+            <tr><th>ID</th><th>Nombre</th><th>Email</th><th>Rol</th><th>Estado</th><th>Acciones</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/users.js"></script>
+</body>
+</html>

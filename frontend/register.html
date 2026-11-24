@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Registro | SA</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="center">
+    <form class="card" id="register-form" data-testid="register-form" novalidate>
+      <h1>Crear cuenta</h1>
+      <p class="subtitle">Regístrate para acceder al sistema</p>
+
+      <label for="name">Nombre</label>
+      <input id="name" name="name" autocomplete="name" data-testid="register-name" required>
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email" data-testid="register-email" required>
+
+      <label for="password">Contraseña (mínimo 6 caracteres)</label>
+      <input id="password" name="password" type="password" autocomplete="new-password"
+             data-testid="register-password" required>
+
+      <label for="confirm">Confirmar contraseña</label>
+      <input id="confirm" name="confirm" type="password" autocomplete="new-password"
+             data-testid="register-confirm" required>
+
+      <button class="block" type="submit" data-testid="register-submit">Registrarme</button>
+      <div id="alert" class="alert hidden" role="alert" data-testid="register-alert"></div>
+
+      <p class="links">¿Ya tienes cuenta? <a href="/index.html" data-testid="go-login">Inicia sesión</a></p>
+    </form>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script>
+    const form = document.getElementById("register-form");
+    const alertBox = document.getElementById("alert");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      hideAlert(alertBox);
+      if (form.password.value !== form.confirm.value) {
+        showAlert(alertBox, "Las contraseñas no coinciden");
+        return;
+      }
+      try {
+        await api("/auth/register", {
+          method: "POST",
+          body: { name: form.name.value, email: form.email.value, password: form.password.value },
+        });
+        window.location.href = "/index.html?registered=1";
+      } catch (err) {
+        showAlert(alertBox, err.message);
+      }
+    });
+  </script>
+</body>
+</html>

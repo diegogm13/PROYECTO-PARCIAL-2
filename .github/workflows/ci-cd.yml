@@ -1,0 +1,189 @@
+name: CI/CD - SA V2
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+  OPENOBSERVE_URL: ${{ secrets.OPENOBSERVE_URL }}
+  OPENOBSERVE_USER: ${{ secrets.OPENOBSERVE_USER }}
+  OPENOBSERVE_PASSWORD: ${{ secrets.OPENOBSERVE_PASSWORD }}
+
+jobs:
+  # ----------------------------------------------------------------------
+  # 1) Backend: lint + pytest con cobertura (mínimo 70 %)
+  # ----------------------------------------------------------------------
+  backend-tests:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (flake8)
+        run: flake8 backend tests scripts
+
+      - name: Pruebas backend + cobertura
+        run: >
+          pytest tests/backend -v
+          --cov=backend/app --cov-report=term-missing --cov-fail-under=70
+          --junitxml=reports/backend.xml
+
+      - name: Resumen de cobertura
+        if: always()
+        run: |
+          echo "## Cobertura backend" >> "$GITHUB_STEP_SUMMARY"
+          coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Guardar reporte
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-backend
+          path: reports/
+          if-no-files-found: ignore
+
+  # ----------------------------------------------------------------------
+  # 2) Frontend + API end-to-end con Playwright contra el stack real
+  #    (NGINX + backend + PostgreSQL levantados con docker compose)
+  # ----------------------------------------------------------------------
+  e2e-tests:
+    name: Frontend E2E (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Instalar dependencias y navegador
+        run: |
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Levantar la aplicación (docker compose)
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: docker compose up -d --build --wait
+
+      - name: Pruebas Playwright
+        run: >
+          pytest tests/e2e -v
+          --junitxml=reports/e2e.xml
+          --screenshot=only-on-failure --tracing=retain-on-failure --output=test-results
+
+      - name: Logs de los contenedores (si falló)
+        if: failure()
+        run: docker compose logs --tail 100
+
+      - name: Guardar reportes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-e2e
+          path: |
+            reports/
+            test-results/
+          if-no-files-found: ignore
+
+      - name: Apagar la aplicación
+        if: always()
+        run: docker compose down -v
+
+  # ----------------------------------------------------------------------
+  # 3) Registro en OpenObserve del resultado de las pruebas (SIEMPRE corre)
+  # ----------------------------------------------------------------------
+  report-tests:
+    name: Reporte de pruebas a OpenObserve
+    needs: [backend-tests, e2e-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: test-reports-*
+          path: artifacts
+
+      - name: Enviar resultado de las pruebas
+        env:
+          RESULT: ${{ (needs.backend-tests.result == 'success' && needs.e2e-tests.result == 'success') && 'success' || 'failure' }}
+        run: >
+          python scripts/report_openobserve.py --event tests --status "$RESULT"
+          --suite backend=${{ needs.backend-tests.result }}
+          --suite e2e=${{ needs.e2e-tests.result }}
+          --junit "artifacts/**/*.xml"
+
+      - name: Registrar despliegue bloqueado
+        if: >
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          (needs.backend-tests.result != 'success' || needs.e2e-tests.result != 'success')
+        run: >
+          python scripts/report_openobserve.py --event deploy_blocked --status failure
+          --message "Pruebas fallidas: se bloquea la conexión SSH y el despliegue a EC2"
+          --suite backend=${{ needs.backend-tests.result }}
+          --suite e2e=${{ needs.e2e-tests.result }}
+
+  # ----------------------------------------------------------------------
+  # 4) CD: solo si TODAS las pruebas pasaron y es push a main
+  # ----------------------------------------------------------------------
+  deploy:
+    name: Despliegue en AWS EC2
+    needs: [backend-tests, e2e-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-ec2
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Actualizar contenedores en EC2 (SSH)
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: SHA
+          command_timeout: 20m
+          script: |
+            set -e
+            cd ~/sa-v2
+            PREV=$(git rev-parse HEAD)
+            git fetch --quiet origin
+            git reset --hard "$SHA"
+            sh scripts/deploy.sh "$SHA" "$PREV"
+
+      - name: Verificar desde Internet
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fs "http://${{ secrets.EC2_HOST }}/api/health" | tee /tmp/health.json | grep -q "${{ github.sha }}"; then
+              echo "Desplegado:"; cat /tmp/health.json; exit 0
+            fi
+            sleep 3
+          done
+          echo "El servidor no responde con el commit ${{ github.sha }}"; exit 1
+
+      - name: Registrar evento de despliegue en OpenObserve
+        if: always()
+        run: >
+          python scripts/report_openobserve.py --event deploy --status "${{ job.status }}"
+          --message "Despliegue en EC2 ${{ job.status }}: commit ${{ github.sha }} (${{ secrets.EC2_HOST }})"
